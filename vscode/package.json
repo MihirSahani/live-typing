@@ -1,0 +1,11 @@
+{
+  "name": "claude-typing-follow",
+  "displayName": "Claude Typing Follow",
+  "description": "Moves the cursor along with claude-typing's live replay of Claude's edits.",
+  "version": "0.0.1",
+  "publisher": "live-typing",
+  "license": "MIT",
+  "engines": { "vscode": "^1.75.0" },
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js"
+}

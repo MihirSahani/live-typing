@@ -233,6 +233,31 @@ def jump(path, line, col=1):
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # only defined on Windows
 
+# move the cursor along with each keystroke without slowing the typing;
+# VS Code's CLI takes ~1 s per call, so it runs in the background and overlapping calls are skipped
+_follower = None  # the background `code -g` still running, if any
+
+
+def follow(path, line, col):
+    global _follower
+    if editor_kind() != "code":
+        jump(path, line, col)  # Zed's CLI is quick: stay in step with every key
+        return
+    # if the companion VS Code extension is running, hand it the position through a file;
+    # it moves the cursor instantly, so the slow CLI below is only a fallback
+    if (STATE_DIR / "vscode-follow").exists():
+        tmp = STATE_DIR / "cursor.tmp"
+        tmp.write_text(f"{path}\n{line}\n{col}\n", encoding="utf-8")
+        os.replace(tmp, STATE_DIR / "cursor")  # atomic, so the extension never reads half a line
+        return
+    if _follower is not None and _follower.poll() is None:
+        return
+    try:
+        _follower = subprocess.Popen(editor_cmd(path, line, col), stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    except OSError:
+        _follower = None
+
 
 def animate(path, steps, size):
     # write each frame to disk, then put the cursor on that frame's typing point
@@ -262,7 +287,7 @@ def animate(path, steps, size):
         time.sleep(max(0.0, due - time.monotonic()))
         if time.monotonic() - last >= min_gap:
             write(path, text)
-            jump(path, line, col)
+            follow(path, line, col)
             pending, last = None, time.monotonic()
         else:
             pending = (text, line, col)
