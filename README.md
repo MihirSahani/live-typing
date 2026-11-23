@@ -13,7 +13,14 @@ live in your editor, word by word, with your cursor following the typing.
 
 Works with **Zed** and **VS Code** (also `code-oss`, `codium`) when Claude runs inside them (the hook looks
 for the editor among its parent processes). Elsewhere the file is still typed on disk, just without the
-cursor jumps. Linux and macOS; needs `python3` (stdlib only).
+cursor jumps. Linux, Windows and macOS; needs Python 3.10+ (stdlib only) as `python3`, `python` or `py`.
+
+### Windows
+
+- Install [Git for Windows](https://git-scm.com/download/win): Claude Code runs the hook through Git Bash.
+- Install Python from python.org (or `winget install Python.Python.3.13`). The Microsoft Store `python3`
+  stub is skipped automatically.
+- Make sure the editor's CLI is on `PATH`: `code` (the VS Code installer adds it) or `zed`.
 
 ## Install
 
@@ -47,7 +54,8 @@ Keep **Follow Agent** off in the agent panel: following makes Zed scroll on ever
 ## Commands
 
 The plugin's `bin/` is on Claude's `PATH`, so you can ask Claude to run these, or run them yourself via
-the full path (`~/.claude/plugins/cache/.../bin/claude-typing`):
+the full path (`~/.claude/plugins/cache/live-typing/live-typing/<version>/bin/claude-typing`; on Windows
+run it in Git Bash through `bin/live-typing-hook`, e.g. `live-typing-hook speed 60`):
 
 | Command | What it does |
 |---|---|

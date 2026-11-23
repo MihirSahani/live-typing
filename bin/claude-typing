@@ -7,13 +7,16 @@ PreToolUse snapshots the file; PostToolUse rewinds it and re-types only the chan
   claude-typing selftest   run the self-check
 """
 import difflib
+import functools
 import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -22,7 +25,8 @@ DELETE_SPEEDUP = 4  # removed text disappears faster than new text is typed
 AFTER_PAUSE = 0.5  # seconds to see a finished change before moving on
 FILE_PAUSE = 4  # seconds to look at a finished file before jumping to a different one
 
-STATE_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "claude-typing"
+# without XDG_RUNTIME_DIR (macOS, Windows), keep state in the system temp folder
+STATE_DIR = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()) / "claude-typing"
 OFF = STATE_DIR / "off"
 KEEP_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "claude-typing"
 SPEED_FILE = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "claude-typing" / "speed"
@@ -115,28 +119,119 @@ def frames(old, new):
         yield ("show", out + x[pos:] + rest, AFTER_PAUSE)
 
 
-# jump to line and column, so the editor's cursor sits where the typing is
-def editor_cmd(path, line, col=1):
-    """Command that focuses path:line:col in the editor this Claude runs under, or None."""
-    pid = os.getppid()
-    while pid > 1:
-        try:
-            comm = Path(f"/proc/{pid}/comm").read_text().strip()
-            stat = Path(f"/proc/{pid}/stat").read_text()
-        except OSError:
-            return None
-        if comm in ("zed-editor", "zed", "zeditor"):
-            return ["zed", f"{path}:{line}:{col}"]
-        if comm in ("code", "code-oss", "codium"):
-            return ["code", "-g", f"{path}:{line}:{col}"]
-        pid = int(stat.rsplit(")", 1)[1].split()[1])
+# look up a process's parent and name on Linux (/proc), Windows (process snapshot) or macOS (ps)
+EDITORS = {"zed": "zed", "zed-editor": "zed", "zeditor": "zed", "code": "code", "code-oss": "code", "codium": "code"}
+
+
+def find_editor(pid, parent):
+    """"zed" or "code" for the nearest ancestor of pid that is an editor, or None.
+    parent(pid) gives (parent pid, process name or path), or None if unknown."""
+    seen = set()
+    while pid not in seen and (info := parent(pid)):
+        seen.add(pid)  # Windows reuses pids, so a chain can loop
+        ppid, name = info
+        name = os.path.basename(name.replace("\\", "/")).lower().removesuffix(".exe")
+        if name in EDITORS:
+            return EDITORS[name]
+        pid = ppid
     return None
 
 
+def parent_lookup():
+    if sys.platform == "win32":
+        return windows_processes().get
+    if os.path.isdir("/proc/self"):
+        return proc_parent
+    return ps_parent
+
+
+def proc_parent(pid):
+    try:
+        name = Path(f"/proc/{pid}/comm").read_text().strip()
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    return int(stat.rsplit(")", 1)[1].split()[1]), name
+
+
+def ps_parent(pid):
+    try:
+        out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=5, check=False).stdout.split(None, 1)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (int(out[0]), out[1].strip()) if len(out) == 2 else None
+
+
+def windows_processes():
+    """{pid: (parent pid, exe name)} for every running process, or {} if Windows refuses."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Entry(ctypes.Structure):  # PROCESSENTRY32W
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+
+    k32 = ctypes.WinDLL("kernel32")
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k32.Process32FirstW.argtypes = k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entry)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snap in (None, ctypes.c_void_p(-1).value):  # INVALID_HANDLE_VALUE
+        return {}
+    table = {}
+    entry = Entry(dwSize=ctypes.sizeof(Entry))
+    try:
+        ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            table[entry.th32ProcessID] = (entry.th32ParentProcessID, entry.szExeFile)
+            ok = k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    return table
+
+
+# jump to line and column, so the editor's cursor sits where the typing is
+# find the editor once per edit by walking parent processes, then build its CLI command
+def editor_cmd(path, line, col=1):
+    """Command that focuses path:line:col in the editor this Claude runs under, or None."""
+    where = f"{path}:{line}:{col}"
+    match editor_kind():
+        case "zed":
+            return [cli("zed"), where]
+        case "code":
+            return [cli("code"), "-g", where]
+    return None
+
+
+@functools.cache
+def editor_kind():
+    return find_editor(os.getppid(), parent_lookup())
+
+
+@functools.cache
+def cli(name):
+    # full path, so Windows can start code.cmd without a shell
+    return shutil.which(name) or name
+
+
 def jump(path, line, col=1):
+    # no console window on Windows; a missing or hung editor CLI just skips the jump
     cmd = editor_cmd(path, line, col)
-    if cmd:
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False)
+    if not cmd:
+        return
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False,
+                       creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # only defined on Windows
 
 
 def animate(path, steps, size):
@@ -198,6 +293,16 @@ def selftest():
                 assert line <= text.count("\n") + 1 and col >= 1, (f, down)
                 lines.append(line)
         assert len(set(lines)) >= 50 and lines == sorted(lines, reverse=not down), down
+    # the editor is found among parent processes on every platform's naming (Code.exe, Zed.exe, paths)
+    def chain(*names):  # pid 1 is the hook's parent, each next pid its parent
+        return {i: (i + 1, n) for i, n in enumerate(names, 1)}.get
+
+    assert find_editor(1, chain("sh.exe", "bash.exe", "claude.exe", "node.exe", "Zed.exe")) == "zed"
+    assert find_editor(1, chain("bash.exe", "claude.exe", "pwsh.exe", "Code.exe")) == "code"
+    assert find_editor(1, chain("zsh", "/Applications/Zed.app/Contents/MacOS/zed")) == "zed"
+    assert find_editor(1, chain("python3", "claude", "zed-editor")) == "zed"
+    assert find_editor(1, {1: (2, "bash.exe"), 2: (1, "claude.exe")}.get) is None
+    assert find_editor(1, chain("bash", "claude", "kitty")) is None
     print("ok")
 
 
