@@ -6,8 +6,10 @@ live in your editor, word by word, with your cursor following the typing.
 - **Hook:** after every `Edit`/`Write`, the file is rewound to its old content and the change is re-typed
   at reading speed. Only the changed words are typed; deletions run 4× faster. The file always ends with
   exactly what Claude wrote, with Claude's timestamp.
-- **Cursor:** after each keystroke your editor's cursor jumps to the typing point
-  (`zed path:line:col` or `code -g path:line:col`).
+- **Cursor:** after each keystroke your editor's cursor jumps to the typing point. Zed gets
+  `zed path:line:col`; VS Code gets it through the small companion extension in `vscode/` (see below),
+  since `code -g` takes about a second per call. Without the extension, VS Code's cursor catches up
+  about once a second.
 - **Skill `follow-along`:** makes Claude order its edits so each one makes sense as it appears, and lay out
   step comments in the file before filling them in.
 
@@ -37,6 +39,21 @@ claude plugin install live-typing@live-typing
 ```
 
 Update later with `/plugin update live-typing`.
+
+## VS Code: install the cursor extension
+
+So VS Code's cursor follows every keystroke, copy the companion extension into VS Code's extensions
+folder (works in a Linux/macOS shell and in Git Bash on Windows):
+
+```bash
+src=$(ls -d ~/.claude/plugins/cache/live-typing/live-typing/*/vscode | sort -V | tail -1)
+mkdir -p ~/.vscode/extensions
+cp -r "$src" ~/.vscode/extensions/live-typing.claude-typing-follow-0.0.1
+```
+
+For `code-oss` or `codium`, use `~/.vscode-oss/extensions` instead. Then run **Developer: Reload Window**
+once. While it runs, the hook sends each typing point to it through
+`$XDG_RUNTIME_DIR/claude-typing/cursor` instead of calling `code -g`.
 
 ## Zed: keep the view stable
 
