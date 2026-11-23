@@ -1,0 +1,15 @@
+{
+  "name": "live-typing",
+  "description": "Watch Claude's edits being typed live in your editor",
+  "owner": {
+    "name": "Mihir Sahani",
+    "url": "https://github.com/MihirSahani"
+  },
+  "plugins": [
+    {
+      "name": "live-typing",
+      "source": "./",
+      "description": "Replays every Edit/Write as live typing in Zed or VS Code, with your cursor following along"
+    }
+  ]
+}
