@@ -1,7 +1,7 @@
 {
   "name": "live-typing",
   "displayName": "Live Typing",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Replays every Edit/Write as live, word-by-word typing in Zed or VS Code, with your cursor following along, plus a follow-along skill that makes each change easy to read as it appears",
   "author": {
     "name": "Mihir Sahani",
